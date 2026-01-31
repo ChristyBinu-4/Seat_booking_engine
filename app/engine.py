@@ -20,35 +20,53 @@ class SeatBookingEngine:
     # Availability (READ ONLY)
     # ---------------------------
     def get_availability(self, show_id: int):
-      with self.conn.cursor() as cur:
-          cur.execute(
-              """
-              SELECT
-                  COUNT(*) FILTER (
-                      WHERE bs.seat_id IS NULL
-                        AND sh.seat_id IS NULL
-                  ) AS available,
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM booking_seats bs
+                            WHERE bs.seat_id = s.seat_id
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM seat_holds sh
+                            WHERE sh.seat_id = s.seat_id
+                              AND sh.expires_at > now()
+                        )
+                    ) AS available,
 
-                  COUNT(DISTINCT sh.seat_id) AS held,
-                  COUNT(DISTINCT bs.seat_id) AS booked
-              FROM seats s
-              LEFT JOIN booking_seats bs
-                    ON bs.seat_id = s.seat_id
-              LEFT JOIN seat_holds sh
-                    ON sh.seat_id = s.seat_id
-                    AND sh.expires_at > now()
-              WHERE s.show_id = %s;
-              """,
-              (show_id,),
-          )
+                    COUNT(*) FILTER (
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM seat_holds sh
+                            WHERE sh.seat_id = s.seat_id
+                              AND sh.expires_at > now()
+                        )
+                    ) AS held,
 
-          available, held, booked = cur.fetchone()
+                    COUNT(*) FILTER (
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM booking_seats bs
+                            WHERE bs.seat_id = s.seat_id
+                        )
+                    ) AS booked
+                FROM seats s
+                WHERE s.show_id = %s;
+                """,
+                (show_id,),
+            )
 
-      return {
-          "available": available,
-          "held": held,
-          "booked": booked,
-      }
+            available, held, booked = cur.fetchone()
+
+        return {
+            "available": available,
+            "held": held,
+            "booked": booked,
+        }
 
 
     def hold_seats(
@@ -111,96 +129,97 @@ class SeatBookingEngine:
 
         
     def confirm_booking(self, hold_id: str) -> str:
-        """
-        Converts a valid hold into a booking.
-        Operation is idempotent.
-        Returns booking_id.
-        """
+      """
+      Converts a valid (non-expired) hold into a booking.
+      Operation is idempotent.
+      Raises exception if hold is expired or invalid.
+      """
 
-        try:
-            with self.conn:
-                with self.conn.cursor() as cur:
+      try:
+          with self.conn:
+              with self.conn.cursor() as cur:
 
-                    # ---------------------------
-                    # Idempotency check
-                    # ---------------------------
-                    cur.execute(
-                        """
-                        SELECT booking_id
-                        FROM bookings
-                        WHERE hold_id = %s
-                        """,
-                        (hold_id,),
-                    )
-                    row = cur.fetchone()
-                    if row:
-                        return row[0]
+                  # ---------------------------
+                  # Lock and validate active hold FIRST
+                  # ---------------------------
+                  cur.execute(
+                      """
+                      SELECT seat_id, show_id
+                      FROM seat_holds
+                      WHERE hold_id = %s
+                        AND expires_at > now()
+                      FOR UPDATE
+                      """,
+                      (hold_id,),
+                  )
+                  holds = cur.fetchall()
 
-                    # ---------------------------
-                    # Lock all seats for this hold
-                    # ---------------------------
-                    cur.execute(
-                        """
-                        SELECT seat_id, show_id
-                        FROM seat_holds
-                        WHERE hold_id = %s
-                          AND expires_at > now()
-                        FOR UPDATE
-                        """,
-                        (hold_id,),
-                    )
-                    holds = cur.fetchall()
+                  if not holds:
+                      raise Exception("Hold not found or expired")
 
-                    if not holds:
-                        raise Exception("Hold not found or expired")
+                  show_id = holds[0][1]
 
-                    # All seats belong to the same show
-                    show_id = holds[0][1]
-                    booking_id = str(uuid.uuid4())
+                  # ---------------------------
+                  # Idempotency check (SAFE now)
+                  # ---------------------------
+                  cur.execute(
+                      """
+                      SELECT booking_id
+                      FROM bookings
+                      WHERE hold_id = %s
+                      """,
+                      (hold_id,),
+                  )
+                  row = cur.fetchone()
+                  if row:
+                      return row[0]
 
-                    # ---------------------------
-                    # Create booking (ONE row)
-                    # ---------------------------
-                    cur.execute(
-                        """
-                        INSERT INTO bookings (
-                            booking_id,
-                            show_id,
-                            hold_id
-                        )
-                        VALUES (%s, %s, %s)
-                        """,
-                        (booking_id, show_id, hold_id),
-                    )
+                  booking_id = str(uuid.uuid4())
 
-                    # ---------------------------
-                    # Attach seats to booking
-                    # ---------------------------
-                    for seat_id, _ in holds:
-                        cur.execute(
-                            """
-                            INSERT INTO booking_seats (
-                                booking_id,
-                                seat_id
-                            )
-                            VALUES (%s, %s)
-                            """,
-                            (booking_id, seat_id),
-                        )
+                  # ---------------------------
+                  # Create booking
+                  # ---------------------------
+                  cur.execute(
+                      """
+                      INSERT INTO bookings (
+                          booking_id,
+                          show_id,
+                          hold_id
+                      )
+                      VALUES (%s, %s, %s)
+                      """,
+                      (booking_id, show_id, hold_id),
+                  )
 
-                    # ---------------------------
-                    # Remove holds
-                    # ---------------------------
-                    cur.execute(
-                        """
-                        DELETE FROM seat_holds
-                        WHERE hold_id = %s
-                        """,
-                        (hold_id,),
-                    )
+                  # ---------------------------
+                  # Attach seats
+                  # ---------------------------
+                  for seat_id, _ in holds:
+                      cur.execute(
+                          """
+                          INSERT INTO booking_seats (
+                              booking_id,
+                              seat_id
+                          )
+                          VALUES (%s, %s)
+                          """,
+                          (booking_id, seat_id),
+                      )
 
-            return booking_id
+                  # ---------------------------
+                  # Remove holds
+                  # ---------------------------
+                  cur.execute(
+                      """
+                      DELETE FROM seat_holds
+                      WHERE hold_id = %s
+                      """,
+                      (hold_id,),
+                  )
 
-        except Exception:
-            self.conn.rollback()
-            raise
+              return booking_id
+
+      except Exception:
+          self.conn.rollback()
+          raise
+
