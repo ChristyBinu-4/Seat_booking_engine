@@ -19,105 +19,96 @@ class SeatBookingEngine:
     # ---------------------------
     # Availability (READ ONLY)
     # ---------------------------
-    def get_availability(self, show_id: str):
+    def get_availability(self, show_id: int):
       with self.conn.cursor() as cur:
-          # total seats
-          cur.execute(
-              "SELECT COUNT(*) FROM seats WHERE show_id = %s",
-              (show_id,),
-          )
-          total = cur.fetchone()[0]
-
-          # booked seats (distinct seat_id)
           cur.execute(
               """
-              SELECT COUNT(DISTINCT seat_id)
-              FROM bookings
-              WHERE show_id = %s
+              SELECT
+                  COUNT(*) FILTER (
+                      WHERE bs.seat_id IS NULL
+                        AND sh.seat_id IS NULL
+                  ) AS available,
+
+                  COUNT(DISTINCT sh.seat_id) AS held,
+                  COUNT(DISTINCT bs.seat_id) AS booked
+              FROM seats s
+              LEFT JOIN booking_seats bs
+                    ON bs.seat_id = s.seat_id
+              LEFT JOIN seat_holds sh
+                    ON sh.seat_id = s.seat_id
+                    AND sh.expires_at > now()
+              WHERE s.show_id = %s;
               """,
               (show_id,),
           )
-          booked = cur.fetchone()[0]
 
-          # held seats (distinct seat_id, only active holds)
-          cur.execute(
-              """
-              SELECT COUNT(DISTINCT seat_id)
-              FROM seat_holds
-              WHERE show_id = %s
-                AND expires_at > now()
-              """,
-              (show_id,),
-          )
-          held = cur.fetchone()[0]
+          available, held, booked = cur.fetchone()
 
       return {
-          "available": total - booked - held,
+          "available": available,
           "held": held,
           "booked": booked,
       }
 
+
     def hold_seats(
-      self,
-      show_id: str,
-      seat_count: int,
-      hold_duration_seconds: int,) -> str:
-      """
-      Attempts to hold N available seats.
-      Returns hold_id on success.
-      Raises Exception on failure.
-      """
-      hold_id = str(uuid.uuid4())
-      expires_at = datetime.now() + timedelta(
-        seconds=hold_duration_seconds
-      )
+        self,
+        show_id: int,
+        seat_count: int,
+        hold_duration_seconds: int,
+    ) -> str:
+        """
+        Attempts to hold N available seats.
+        Returns hold_id on success.
+        Raises Exception on failure.
+        """
+        hold_id = str(uuid.uuid4())
+        expires_at = datetime.now() + timedelta(seconds=hold_duration_seconds)
 
-      try:
-          with self.conn:
-              with self.conn.cursor() as cur:
-                  # Lock available seats (DETERMINISTIC ORDER IS CRITICAL)
-                  cur.execute(
-                      """
-                      SELECT s.seat_id
-                      FROM seats s
-                      WHERE s.show_id = %s
-                        AND NOT EXISTS (
-                            SELECT 1 FROM bookings b
-                            WHERE b.seat_id = s.seat_id
-                        )
-                        AND NOT EXISTS (
-                            SELECT 1 FROM seat_holds h
-                            WHERE h.seat_id = s.seat_id
-                              AND h.expires_at > now()
-                        )
-                      ORDER BY s.seat_number
-                      FOR UPDATE SKIP LOCKED
-                      LIMIT %s
-                      """,
-                      (show_id, seat_count),
-                  )
+        try:
+            with self.conn:
+                with self.conn.cursor() as cur:
+                    # Insert holds atomically
+                    cur.execute(
+                        """
+                        INSERT INTO seat_holds (hold_id, show_id, seat_id, expires_at)
+                        SELECT
+                            %s,
+                            %s,
+                            s.seat_id,
+                            %s
+                        FROM seats s
+                        LEFT JOIN booking_seats bs
+                              ON bs.seat_id = s.seat_id
+                        LEFT JOIN seat_holds sh
+                              ON sh.seat_id = s.seat_id
+                              AND sh.expires_at > now()
+                        WHERE s.show_id = %s
+                          AND bs.seat_id IS NULL
+                          AND sh.seat_id IS NULL
+                        ORDER BY s.seat_number
+                        LIMIT %s
+                        RETURNING seat_id;
+                        """,
+                        (
+                            hold_id,
+                            show_id,
+                            expires_at,
+                            show_id,
+                            seat_count,
+                        ),
+                    )
 
-                  rows = cur.fetchall()
-                  if len(rows) < seat_count:
-                      raise Exception("Not enough available seats")
+                    rows = cur.fetchall()
+                    if len(rows) < seat_count:
+                        raise Exception("Not enough available seats")
 
-                  # Insert holds
-                  for (seat_id,) in rows:
-                      cur.execute(
-                          """
-                          INSERT INTO seat_holds (
-                              hold_id, show_id, seat_id, expires_at
-                          )
-                          VALUES (%s, %s, %s, %s)
-                          """,
-                          (hold_id, show_id, seat_id, expires_at),
-                      )
+            return hold_id
 
-          return hold_id
+        except Exception:
+            self.conn.rollback()
+            raise
 
-      except Exception:
-          self.conn.rollback()
-          raise
         
     def confirm_booking(self, hold_id: str) -> str:
         """
