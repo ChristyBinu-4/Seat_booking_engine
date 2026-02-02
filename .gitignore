@@ -1,0 +1,114 @@
+######################################
+# Python
+######################################
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Compiled extensions
+*.so
+
+# Virtual environments
+.env
+.venv
+venv/
+env/
+ENV/
+.virtualenvs/
+
+# Python build artifacts
+build/
+dist/
+eggs/
+*.egg-info/
+.installed.cfg
+
+######################################
+# Pytest / Testing
+######################################
+
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# pytest-bdd generated artifacts
+*.feature.orig
+
+######################################
+# Logs
+######################################
+
+*.log
+logs/
+*.out
+
+######################################
+# Environment variables
+######################################
+
+.env.*
+!.env.example
+
+######################################
+# IDE / Editors
+######################################
+
+# VS Code
+.vscode/
+!.vscode/extensions.json
+
+# IntelliJ / PyCharm
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+
+# MacOS
+.DS_Store
+
+######################################
+# Docker
+######################################
+
+# Docker runtime files
+docker-compose.override.yml
+
+# Docker volumes (if accidentally created locally)
+pgdata/
+postgres-data/
+
+######################################
+# Database
+######################################
+
+# Local Postgres dumps / backups
+*.sql
+*.dump
+*.backup
+
+######################################
+# OS / Misc
+######################################
+
+Thumbs.db
+desktop.ini
+
+######################################
+# Temporary / Scratch
+######################################
+
+tmp/
+temp/
+.cache/
+
+######################################
+# Test artifacts / Debug
+######################################
+
+*.http
+*.rest
+*.session
