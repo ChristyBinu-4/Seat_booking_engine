@@ -1,21 +1,24 @@
-from pytest_bdd import given, when, then, scenarios
+from pytest_bdd import when, then
 import requests
 
-scenarios("../features/seat_availability.feature")
+BASE_URL = "http://localhost:8000"
 
-
-@given("a show with 10 seats exists")
-def given_show_exists(show_id):
-    return show_id
-
+# ---------------------------
+# WHEN
+# ---------------------------
 
 @when("the availability is queried")
 def query_availability(show_id, context):
     response = requests.get(
-        f"http://localhost:8000/shows/{show_id}/availability"
+        f"{BASE_URL}/shows/{show_id}/availability"
     )
+    assert response.status_code == 200
     context["availability"] = response.json()
 
+
+# ---------------------------
+# THEN
+# ---------------------------
 
 @then("available seats should be 10")
 def available_10(context):
