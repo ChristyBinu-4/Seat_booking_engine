@@ -148,6 +148,14 @@ Each scenario proves a fundamental correctness rule.
 ```bash
 uvicorn app.main:app --reload
 ```
+### Running Docker
+```
+try to run docker-compose down-v 
+```
+before building docker image, otherwise the data will persist in db>
+```
+docker-compose down -v && docker-compose up --build
+```
 
 ### Run Tests
 ```bash
